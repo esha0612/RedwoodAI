@@ -31,3 +31,6 @@ drizzle/
 # IDE
 .vscode
 .idea
+
+# ML model cache
+.model-cache/
