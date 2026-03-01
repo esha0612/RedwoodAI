@@ -1,25 +1,26 @@
+// risk-assessor.ts
+// Runs the MLP risk model against a property address and returns flood, wildfire,
+// earthquake, and hurricane scores plus SASB metrics. PII is stripped upstream
+// before any of this runs.
+
+// -- types --
+
+// what gets sent back to the client
 export interface RiskScores {
-  overallScore: number; // Composite risk score from 0 to 100
-  floodRisk: number; // Risk score for flooding (0-100)
-  wildfireRisk: number; //  Risk score for wildfires (0-100)
-  earthquakeRisk: number;  // Risk score for earthquakes (0-100)
-  hurricaneRisk: number; // Risk score for hurricanes (0-100)
-  ghgEmissions: number;
-  airQualityIndex: number;
+  overallScore: number;     // weighted average of the four hazard scores (0-100)
+  floodRisk: number;        // 0-100
+  wildfireRisk: number;     // 0-100
+  earthquakeRisk: number;   // 0-100
+  hurricaneRisk: number;    // 0-100
+  ghgEmissions: number;     // tCO2e/year
+  airQualityIndex: number;  // annual avg AQI
   latitude: number;
   longitude: number;
   sasbMetrics: Record<string, any>;
   modelMetrics: ModelMetrics;
 }
-//the four risk scores are computed on the MLP model
 
-// The compute an overall risk score 
-
-//After PII is redacted, the MLP runs on 4 different individual risk scores and computes an overall score based on SASB metrics. 
-
-//Model metrics
-//12 features used and these features are normalized and weighted according to the model's learned parameters.
-
+// diagnostic info about the model run — 12 features, normalized + weighted
 export interface ModelMetrics {
   modelType: string;
   featuresUsed: string[];
@@ -30,25 +31,27 @@ export interface ModelMetrics {
   processingTimeMs: number;
 }
 
-
-
-
+// raw geo/env features before normalization
 interface GeoFeatures {
   latitude: number;
   longitude: number;
-  elevation: number;
+  elevation: number;               // metres
   coastalProximityKm: number;
   faultProximityKm: number;
-  vegetationDensity: number;
-  urbanizationIndex: number;
-  historicalFloodFreq: number;
-  historicalFireFreq: number;
-  historicalHurricaneFreq: number;
+  vegetationDensity: number;       // 0-1
+  urbanizationIndex: number;       // 0-1
+  historicalFloodFreq: number;     // 0-1
+  historicalFireFreq: number;      // 0-1
+  historicalHurricaneFreq: number; // 0-1
   meanAnnualPrecipMm: number;
   meanAnnualTempC: number;
-  droughtIndex: number;
+  droughtIndex: number;            // 0-1
 }
-// Predefined geographic profiles for major US states to enhance feature extraction based on address parsing. This allows the model to infer reasonable geographic features even when only a state-level location is provided, improving risk predictions for properties without precise geocoding. (benchmarking against real-world data would be needed to refine these profiles for accuracy in a production system)
+
+// -- geo lookup tables --
+
+// baseline profiles per state — good enough when we only have a state abbreviation
+// and no precise geocoding. would need real calibration data to tighten these up.
 const STATE_GEO_PROFILES: Record<string, Partial<GeoFeatures>> = {
   CA: { elevation: 280, coastalProximityKm: 25, faultProximityKm: 8, vegetationDensity: 0.55, urbanizationIndex: 0.72, historicalFloodFreq: 0.15, historicalFireFreq: 0.42, historicalHurricaneFreq: 0.01, meanAnnualPrecipMm: 560, meanAnnualTempC: 16.5, droughtIndex: 0.65 },
   FL: { elevation: 5, coastalProximityKm: 8, faultProximityKm: 500, vegetationDensity: 0.45, urbanizationIndex: 0.65, historicalFloodFreq: 0.45, historicalFireFreq: 0.12, historicalHurricaneFreq: 0.38, meanAnnualPrecipMm: 1350, meanAnnualTempC: 22.5, droughtIndex: 0.2 },
@@ -62,6 +65,7 @@ const STATE_GEO_PROFILES: Record<string, Partial<GeoFeatures>> = {
   NC: { elevation: 120, coastalProximityKm: 45, faultProximityKm: 250, vegetationDensity: 0.58, urbanizationIndex: 0.52, historicalFloodFreq: 0.28, historicalFireFreq: 0.1, historicalHurricaneFreq: 0.25, meanAnnualPrecipMm: 1180, meanAnnualTempC: 15.8, droughtIndex: 0.18 },
 };
 
+// fallback to the geographic center of the US if state parsing fails
 const DEFAULT_GEO: GeoFeatures = {
   latitude: 39.8283, longitude: -98.5795, elevation: 300, coastalProximityKm: 200,
   faultProximityKm: 150, vegetationDensity: 0.4, urbanizationIndex: 0.5,
@@ -69,6 +73,7 @@ const DEFAULT_GEO: GeoFeatures = {
   meanAnnualPrecipMm: 800, meanAnnualTempC: 14, droughtIndex: 0.35,
 };
 
+// rough centroid per state, jittered further by the address hash in extractFeatures
 const STATE_COORDS: Record<string, { lat: number; lng: number }> = {
   CA: { lat: 37.7749, lng: -122.4194 }, FL: { lat: 27.6648, lng: -81.5158 },
   TX: { lat: 31.9686, lng: -99.9018 }, NY: { lat: 40.7128, lng: -74.006 },
@@ -77,25 +82,49 @@ const STATE_COORDS: Record<string, { lat: number; lng: number }> = {
   LA: { lat: 30.9843, lng: -91.9623 }, NC: { lat: 35.7596, lng: -79.0193 },
 };
 
+// -- helpers --
+
+// djb2 hash — gives us a stable, address-specific number to drive noise + simulated metrics
 function hashAddress(address: string): number {
   let hash = 0;
   for (let i = 0; i < address.length; i++) {
     hash = ((hash << 5) - hash) + address.charCodeAt(i);
-    hash |= 0;
+    hash |= 0; // keep it 32-bit
   }
   return Math.abs(hash);
 }
 
+// nudges a baseline value up or down slightly based on the address hash
+// so two addresses in the same state don't get identical scores
 function addNoise(base: number, seed: number, scale: number = 0.1): number {
   const noise = ((seed % 200) - 100) / 100 * scale;
   return base * (1 + noise);
 }
 
+// -- feature extraction --
+
+// takes a raw address + state code and produces the 12-element normalized vector
+// the hazard predictors actually consume.
+//
+// vector layout:
+//   [0]  elevation / 2000
+//   [1]  1 / (1 + coastalProximityKm / 50)   ← inverse so closer coast = higher value
+//   [2]  1 / (1 + faultProximityKm / 30)      ← same idea for faults
+//   [3]  vegetationDensity
+//   [4]  urbanizationIndex
+//   [5]  historicalFloodFreq
+//   [6]  historicalFireFreq
+//   [7]  historicalHurricaneFreq
+//   [8]  meanAnnualPrecipMm / 2000
+//   [9]  meanAnnualTempC / 35
+//   [10] droughtIndex
+//   [11] |latitude| / 90
 function extractFeatures(address: string, stateCode: string): { features: GeoFeatures; featureVector: number[] } {
   const profile = STATE_GEO_PROFILES[stateCode] || {};
   const coords = STATE_COORDS[stateCode] || { lat: DEFAULT_GEO.latitude, lng: DEFAULT_GEO.longitude };
   const h = hashAddress(address);
 
+  // start from state baseline, add per-address noise, clamp anything that's a probability to [0,1]
   const features: GeoFeatures = {
     latitude: coords.lat + ((h % 40) - 20) * 0.01,
     longitude: coords.lng + (((h >> 8) % 40) - 20) * 0.01,
@@ -130,13 +159,20 @@ function extractFeatures(address: string, stateCode: string): { features: GeoFea
   return { features, featureVector };
 }
 
+// -- model weights --
+
+// one weight vector + bias per hazard type. each index maps to the feature vector above.
+// the big weights tell you what's actually driving each score:
+//   flood      → hist flood freq [5], coastal proximity [1], precipitation [8]
+//   wildfire   → hist fire freq [6], vegetation [3], drought [10]
+//   earthquake → fault proximity [2], latitude [11]
+//   hurricane  → hist hurricane freq [7], coastal proximity [1]
 const MODEL_WEIGHTS = {
   flood: {
     w: [0.05, 0.35, 0.0, 0.0, -0.1, 0.65, 0.0, 0.0, 0.25, 0.0, -0.1, 0.0],
     bias: 15,
     name: "Flood Risk Predictor",
-  }, 
-
+  },
   wildfire: {
     w: [0.15, -0.05, 0.0, 0.55, -0.2, 0.0, 0.7, 0.0, -0.15, 0.2, 0.4, 0.0],
     bias: 10,
@@ -154,10 +190,14 @@ const MODEL_WEIGHTS = {
   },
 };
 
+// -- math --
+
+// standard sigmoid — maps the centered composite score to a devaluation probability
 function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x));
 }
 
+// dot product of features × weights, scaled to 0-100
 function predictRisk(featureVector: number[], weights: number[], bias: number): number {
   let z = bias;
   for (let i = 0; i < featureVector.length; i++) {
@@ -166,10 +206,14 @@ function predictRisk(featureVector: number[], weights: number[], bias: number): 
   return Math.max(0, Math.min(100, z));
 }
 
+// -- main export --
 
+// entry point — takes a full address string (PII already stripped) and returns
+// all four hazard scores, the composite, and the SASB disclosure block.
 export function assessRisk(propertyAddress: string): RiskScores {
   const startTime = Date.now();
 
+  // pull the two-letter state code out of the zip portion, e.g. "CA 94103"
   const stateMatch = propertyAddress.match(/\b([A-Z]{2})\s+\d{5}\b/);
   const stateCode = stateMatch?.[1] || "";
 
@@ -179,16 +223,21 @@ export function assessRisk(propertyAddress: string): RiskScores {
   const wildfireRisk = predictRisk(featureVector, MODEL_WEIGHTS.wildfire.w, MODEL_WEIGHTS.wildfire.bias);
   const earthquakeRisk = predictRisk(featureVector, MODEL_WEIGHTS.earthquake.w, MODEL_WEIGHTS.earthquake.bias);
   const hurricaneRisk = predictRisk(featureVector, MODEL_WEIGHTS.hurricane.w, MODEL_WEIGHTS.hurricane.bias);
- 
+
+  // flood 30%, wildfire 25%, earthquake 20%, hurricane 25%
   const overallWeights = { flood: 0.3, wildfire: 0.25, earthquake: 0.2, hurricane: 0.25 };
-  const overallScore = floodRisk * overallWeights.flood +
+  const overallScore =
+    floodRisk * overallWeights.flood +
     wildfireRisk * overallWeights.wildfire +
     earthquakeRisk * overallWeights.earthquake +
     hurricaneRisk * overallWeights.hurricane;
 
+  // center around 50, then sigmoid to get a 0-1 devaluation probability
   const devaluationZ = (overallScore - 50) / 20;
   const devaluationProbability = sigmoid(devaluationZ);
 
+  // GHG and AQI are simulated from the address hash — in prod these would
+  // come from utility records / EPA data
   const h = hashAddress(propertyAddress);
   const ghgEmissions = 3.0 + (h % 60) / 10;
   const airQualityIndex = 30 + (h % 50);
@@ -200,39 +249,40 @@ export function assessRisk(propertyAddress: string): RiskScores {
     "temp_norm", "drought_index", "latitude_norm",
   ];
 
-  // The SASB metrics are generated based on the extracted features and the computed risk scores. In a real implementation, these would be derived from actual data sources and calculations, but here we simulate them with some variability based on the input address to create a more dynamic response.
+  // SASB IF-RE disclosures — values are simulated here but map to real
+  // reporting categories. swap in actual data sources when available.
   const sasbMetrics = {
-    "IF-RE-450a.1": { //Simulated metric for climate devaluation risk based on the overall risk score
+    "IF-RE-450a.1": {
       label: "Energy Management - Total Energy Consumed",
       value: `${(12000 + (h % 8000)).toLocaleString()} kWh`,
       category: "Energy",
     },
-    "IF-RE-450a.2": { //Simulated metric for climate devaluation risk based on the overall risk score
+    "IF-RE-450a.2": {
       label: "Percentage from Grid Electricity",
       value: `${75 + (h % 20)}%`,
       category: "Energy",
     },
-    "IF-RE-450a.3": { ////Simulated metric for climate devaluation risk based on the overall risk score
+    "IF-RE-450a.3": {
       label: "Climate Change Adaptation - Flood Risk Zone",
       value: floodRisk > 60 ? "FEMA Zone A/V (High)" : floodRisk > 30 ? "FEMA Zone B/X500 (Moderate)" : "FEMA Zone C/X (Minimal)",
       category: "Climate Adaptation",
     },
-    "IF-RE-450a.4": { //Simulated metric for climate devaluation risk based on the overall risk score
+    "IF-RE-450a.4": {
       label: "WUI Classification - Wildfire Interface",
       value: wildfireRisk > 60 ? "Direct WUI Interface" : wildfireRisk > 35 ? "WUI Influence Zone" : "Non-WUI",
       category: "Climate Adaptation",
     },
-    "IF-RE-410a.1": { //Simulated metric for climate devaluation risk based on the overall risk score
+    "IF-RE-410a.1": {
       label: "GHG Emissions - Scope 1 & 2",
       value: `${ghgEmissions.toFixed(1)} tCO2e/year`,
       category: "Emissions",
     },
-    "IF-RE-410a.2": { //Simulated metric for climate devaluation risk based on the overall risk score
+    "IF-RE-410a.2": {
       label: "Air Quality Index - Local Annual Average",
       value: `AQI ${airQualityIndex.toFixed(0)} (${airQualityIndex < 50 ? "Good" : airQualityIndex < 100 ? "Moderate" : "Unhealthy"})`,
       category: "Air Quality",
     },
-    "IF-RE-000.A": { //Simulated metric for climate devaluation risk based on the overall risk score
+    "IF-RE-000.A": {
       label: "30-Year Climate Devaluation Probability",
       value: `${(devaluationProbability * 100).toFixed(1)}%`,
       category: "Financial Risk",
@@ -241,6 +291,7 @@ export function assessRisk(propertyAddress: string): RiskScores {
 
   const processingTimeMs = Date.now() - startTime;
 
+  // confidence nudges up slightly when the feature sum is higher (more signal)
   const modelMetrics: ModelMetrics = {
     modelType: "Multi-Layer Perceptron (Feature-Engineered Linear Ensemble)",
     featuresUsed: featureNames,
