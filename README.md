@@ -1,6 +1,6 @@
 # RedwoodAI
 
-A brief description of what RedwoodAI does.
+RedwoodAI is a dual-purpose automated underwriting tool designed for residential purchase transactions. It ingests raw title documents to automatically redact Personally Identifiable Information (PII) for AI safety, while simultaneously cross-referencing the property data against localized SASB metrics to assign an environmental risk score.
 
 ## Table of Contents
 
