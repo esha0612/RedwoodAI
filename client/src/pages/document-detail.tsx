@@ -6,7 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ArrowLeft, ShieldCheck, ShieldAlert, Eye, EyeOff, Leaf, Droplets, Flame, Mountain, Wind, Brain, Cpu } from "lucide-react";
+import { ArrowLeft, ShieldCheck, ShieldAlert, Eye, EyeOff, Leaf, Droplets, Flame, Mountain, Wind, Brain, Cpu, Loader2 } from "lucide-react";
 import type { Document, PiiFinding, RiskAssessment } from "@shared/schema";
 import { RiskGauge } from "@/components/risk-gauge";
 import { useState } from "react";
@@ -71,16 +71,37 @@ export default function DocumentDetail() {
   const { data: doc, isLoading: docLoading } = useQuery<Document>({
     queryKey: ["/api/documents", docId],
     enabled: !!docId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "pending" || status === "processing" ? 1500 : false;
+    },
   });
+
+  const isProcessing = doc?.status === "pending" || doc?.status === "processing";
+  const isCompleted = doc?.status === "completed";
 
   const { data: piiFindings, isLoading: piiLoading } = useQuery<PiiFinding[]>({
     queryKey: ["/api/documents", docId, "pii"],
     enabled: !!docId,
+    refetchInterval: (query) => {
+      // Keep polling while document is processing
+      if (isProcessing) return 2000;
+      // Keep polling after completion until PII results are available
+      if (isCompleted && (!query.state.data || query.state.data.length === 0)) return 1500;
+      return false;
+    },
   });
 
   const { data: assessment, isLoading: assessLoading } = useQuery<RiskAssessment>({
     queryKey: ["/api/documents", docId, "assessment"],
     enabled: !!docId,
+    refetchInterval: (query) => {
+      // Keep polling while document is processing
+      if (isProcessing) return 2000;
+      // Keep polling after completion until risk assessment is available
+      if (isCompleted && !query.state.data) return 1500;
+      return false;
+    },
   });
 
   const isLoading = docLoading || piiLoading || assessLoading;
@@ -148,6 +169,42 @@ export default function DocumentDetail() {
             <p className="text-sm text-muted-foreground">{doc.propertyAddress || "Address pending extraction"}</p>
           </div>
         </div>
+
+        {isProcessing && (
+          <Card className="border-chart-2/30 bg-chart-2/5">
+            <CardContent className="p-4">
+              <div className="flex items-start gap-3">
+                <Loader2 className="w-4 h-4 animate-spin text-chart-2 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium">Processing document...</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Extracting PII and performing risk assessment. This may take a moment.
+                  </p>
+                  <div className="flex items-center gap-2 mt-3 text-xs">
+                    <span className={piiFindings && piiFindings.length > 0 ? "text-chart-3" : "text-muted-foreground"}>
+                      ✓ PII Detection
+                    </span>
+                    <span className={assessment ? "text-chart-3" : "text-muted-foreground"}>
+                      ✓ Risk Assessment
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {doc?.status === "failed" && (
+          <Card className="border-destructive/30 bg-destructive/5">
+            <CardContent className="p-4 flex items-center gap-3">
+              <ShieldAlert className="w-4 h-4 text-destructive" />
+              <div>
+                <p className="text-sm font-medium">Processing failed</p>
+                <p className="text-xs text-muted-foreground">An error occurred while analyzing this document. Try uploading it again.</p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         <Tabs defaultValue="pii" className="space-y-4">
           <TabsList data-testid="tabs-document-detail">
