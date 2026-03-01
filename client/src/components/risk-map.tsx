@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
-import L from "leaflet";
+import L from "leaflet"; // Import Leaflet's core library for map manipulation
 import type { RiskAssessment } from "@shared/schema";
 import "leaflet/dist/leaflet.css";
 
@@ -39,6 +39,7 @@ function generateHeatZones(assessment: RiskAssessment, riskType: string): HeatCi
     overall: assessment.overallScore,
   };
 
+  // Use the specific risk score for the selected layer, or fall back to overall score if not found
   const score = riskScores[riskType] ?? assessment.overallScore;
   const color = riskColor(score);
   const intensity = score / 100;
@@ -69,7 +70,7 @@ function generateHeatZones(assessment: RiskAssessment, riskType: string): HeatCi
 
   return circles;
 }
-
+ 
 function FitBounds({ assessments }: { assessments: RiskAssessment[] }) {
   const map = useMap();
   const fittedRef = useRef(false);
@@ -86,7 +87,7 @@ function FitBounds({ assessments }: { assessments: RiskAssessment[] }) {
 
   return null;
 }
-
+// Define the types of risk layers available for display on the map
 type RiskLayer = "overall" | "flood" | "wildfire" | "earthquake" | "hurricane";
 
 const layerLabels: Record<RiskLayer, string> = {
@@ -109,8 +110,8 @@ export default function RiskMap({ assessments, className = "", height = "500px" 
   if (assessments.length === 0) return null;
 
   const center: [number, number] = [
-    assessments.reduce((s, a) => s + a.latitude, 0) / assessments.length,
-    assessments.reduce((s, a) => s + a.longitude, 0) / assessments.length,
+    assessments.reduce((s, a) => s + a.latitude, 0) / assessments.length, // Calculate average latitude
+    assessments.reduce((s, a) => s + a.longitude, 0) / assessments.length, // Calculate average longitude
   ];
 
   return (
