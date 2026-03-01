@@ -1,3 +1,4 @@
+//model setup + config
 import { pipeline, env, type TokenClassificationPipeline } from "@xenova/transformers";
 
 env.cacheDir = "./.model-cache";
@@ -31,6 +32,8 @@ export function isModelReady(): boolean {
   return modelReady;
 }
 
+
+//user BERT model to perform NER to extract PII
 export async function initNerModel(): Promise<void> {
   if (nerPipeline || modelLoading) return;
   modelLoading = true;
@@ -49,6 +52,7 @@ export async function initNerModel(): Promise<void> {
   }
 }
 
+//BIO FORMAT -- ENTITY MAPPING TO SIMPLIFIED CATEGORIES
 const NER_ENTITY_MAP: Record<string, string> = {
   "B-PER": "name",
   "I-PER": "name",
@@ -64,6 +68,8 @@ async function runNerInference(text: string): Promise<PiiMatch[]> {
   if (!nerPipeline) return [];
 
   const findings: PiiMatch[] = [];
+
+  //batching to meet 512 token limit -- use 450 to leave room for tokenization expansion and special tokens
   try {
     const chunks = splitIntoChunks(text, 450);
     let globalOffset = 0;
@@ -137,6 +143,8 @@ interface NerToken {
   index?: number;
 }
 
+//RECONSTRUCTS MULTI-TOKEN ENTITIES FROM BIO-LABELED OUTPUT INTO COHERENT STRINGS WITH AVERAGED SCORES
+
 function mergeTokens(tokens: NerToken[]): NerToken[] {
   const merged: NerToken[] = [];
   let current: NerToken | null = null;
@@ -170,6 +178,7 @@ function mergeTokens(tokens: NerToken[]): NerToken[] {
   return merged;
 }
 
+// REGEX PATTERNS FOR COMMON PII TYPES WITH CONTEXT-AWARE HEURISTICS TO REDUCE FALSE POSITIVES (E.G. IGNORE PHONE-LIKE NUMBERS IN FINANCIAL CONTEXTS, OR SHORT NAMES IN NON-PERSON CONTEXTS)
 const PII_PATTERNS: Array<{
   type: string;
   pattern: RegExp;
@@ -232,6 +241,7 @@ const PII_PATTERNS: Array<{
   },
 ];
 
+//look for names in specific contextual patterns to reduce false positives (e.g. ignore capitalized words that look like names but are actually part of an address or organization name)
 const CONTEXTUAL_NAME_PATTERNS = [
   /(?:BORROWER|Borrower|borrower|GRANTOR|Grantor|GRANTEE|Grantee):\s*([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+){1,3})/g,
   /(?:Signed|Contact|Officer):\s*([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+){1,3})/g,
@@ -285,6 +295,7 @@ function runPatternDetection(content: string): PiiMatch[] {
   return findings;
 }
 
+//both models run simlulatenously so if one is already found, then you can skip it (use the highest confidence score)
 function deduplicateFindings(findings: PiiMatch[]): PiiMatch[] {
   findings.sort((a, b) => a.startIndex - b.startIndex || b.confidence - a.confidence);
 
@@ -302,6 +313,7 @@ function deduplicateFindings(findings: PiiMatch[]): PiiMatch[] {
   return result;
 }
 
+//MAIN ENTRY POINT - RUNS BOTH NER AND PATTERN DETECTION, THEN DEDUPLICATES, REDACTS, AND COMPILES METRICS
 export async function detectPii(content: string): Promise<{
   findings: PiiMatch[];
   redactedContent: string;
