@@ -73,7 +73,8 @@ export default function DocumentDetail() {
     enabled: !!docId,
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      return status === "pending" || status === "processing" ? 1500 : false;
+      // Keep polling until completed or failed
+      return status === "pending" || status === "processing" || status === "completed" ? 1500 : false;
     },
   });
 
@@ -83,13 +84,7 @@ export default function DocumentDetail() {
   const { data: piiFindings, isLoading: piiLoading } = useQuery<PiiFinding[]>({
     queryKey: ["/api/documents", docId, "pii"],
     enabled: !!docId,
-    refetchInterval: (query) => {
-      // Keep polling while document is processing
-      if (isProcessing) return 2000;
-      // Keep polling after completion until PII results are available
-      if (isCompleted && (!query.state.data || query.state.data.length === 0)) return 1500;
-      return false;
-    },
+    refetchInterval: 2000, // always poll so PII column updates automatically
   });
 
   const { data: assessment, isLoading: assessLoading } = useQuery<RiskAssessment>({
