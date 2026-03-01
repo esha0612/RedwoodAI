@@ -1,9 +1,9 @@
 export interface RiskScores {
-  overallScore: number;
-  floodRisk: number;
-  wildfireRisk: number;
-  earthquakeRisk: number;
-  hurricaneRisk: number;
+  overallScore: number; // Composite risk score from 0 to 100
+  floodRisk: number; // Risk score for flooding (0-100)
+  wildfireRisk: number; //  Risk score for wildfires (0-100)
+  earthquakeRisk: number;  // Risk score for earthquakes (0-100)
+  hurricaneRisk: number; // Risk score for hurricanes (0-100)
   ghgEmissions: number;
   airQualityIndex: number;
   latitude: number;
@@ -11,6 +11,14 @@ export interface RiskScores {
   sasbMetrics: Record<string, any>;
   modelMetrics: ModelMetrics;
 }
+//the four risk scores are computed on the MLP model
+
+// The compute an overall risk score 
+
+//After PII is redacted, the MLP runs on 4 different individual risk scores and computes an overall score based on SASB metrics. 
+
+//Model metrics
+//12 features used and these features are normalized and weighted according to the model's learned parameters.
 
 export interface ModelMetrics {
   modelType: string;
@@ -21,6 +29,9 @@ export interface ModelMetrics {
   devaluationProbability: number;
   processingTimeMs: number;
 }
+
+
+
 
 interface GeoFeatures {
   latitude: number;
@@ -37,7 +48,7 @@ interface GeoFeatures {
   meanAnnualTempC: number;
   droughtIndex: number;
 }
-
+// Predefined geographic profiles for major US states to enhance feature extraction based on address parsing. This allows the model to infer reasonable geographic features even when only a state-level location is provided, improving risk predictions for properties without precise geocoding. (benchmarking against real-world data would be needed to refine these profiles for accuracy in a production system)
 const STATE_GEO_PROFILES: Record<string, Partial<GeoFeatures>> = {
   CA: { elevation: 280, coastalProximityKm: 25, faultProximityKm: 8, vegetationDensity: 0.55, urbanizationIndex: 0.72, historicalFloodFreq: 0.15, historicalFireFreq: 0.42, historicalHurricaneFreq: 0.01, meanAnnualPrecipMm: 560, meanAnnualTempC: 16.5, droughtIndex: 0.65 },
   FL: { elevation: 5, coastalProximityKm: 8, faultProximityKm: 500, vegetationDensity: 0.45, urbanizationIndex: 0.65, historicalFloodFreq: 0.45, historicalFireFreq: 0.12, historicalHurricaneFreq: 0.38, meanAnnualPrecipMm: 1350, meanAnnualTempC: 22.5, droughtIndex: 0.2 },
@@ -124,7 +135,8 @@ const MODEL_WEIGHTS = {
     w: [0.05, 0.35, 0.0, 0.0, -0.1, 0.65, 0.0, 0.0, 0.25, 0.0, -0.1, 0.0],
     bias: 15,
     name: "Flood Risk Predictor",
-  },
+  }, 
+
   wildfire: {
     w: [0.15, -0.05, 0.0, 0.55, -0.2, 0.0, 0.7, 0.0, -0.15, 0.2, 0.4, 0.0],
     bias: 10,
@@ -154,6 +166,7 @@ function predictRisk(featureVector: number[], weights: number[], bias: number): 
   return Math.max(0, Math.min(100, z));
 }
 
+
 export function assessRisk(propertyAddress: string): RiskScores {
   const startTime = Date.now();
 
@@ -166,7 +179,7 @@ export function assessRisk(propertyAddress: string): RiskScores {
   const wildfireRisk = predictRisk(featureVector, MODEL_WEIGHTS.wildfire.w, MODEL_WEIGHTS.wildfire.bias);
   const earthquakeRisk = predictRisk(featureVector, MODEL_WEIGHTS.earthquake.w, MODEL_WEIGHTS.earthquake.bias);
   const hurricaneRisk = predictRisk(featureVector, MODEL_WEIGHTS.hurricane.w, MODEL_WEIGHTS.hurricane.bias);
-
+ 
   const overallWeights = { flood: 0.3, wildfire: 0.25, earthquake: 0.2, hurricane: 0.25 };
   const overallScore = floodRisk * overallWeights.flood +
     wildfireRisk * overallWeights.wildfire +
@@ -187,38 +200,39 @@ export function assessRisk(propertyAddress: string): RiskScores {
     "temp_norm", "drought_index", "latitude_norm",
   ];
 
+  // The SASB metrics are generated based on the extracted features and the computed risk scores. In a real implementation, these would be derived from actual data sources and calculations, but here we simulate them with some variability based on the input address to create a more dynamic response.
   const sasbMetrics = {
-    "IF-RE-450a.1": {
+    "IF-RE-450a.1": { //Simulated metric for climate devaluation risk based on the overall risk score
       label: "Energy Management - Total Energy Consumed",
       value: `${(12000 + (h % 8000)).toLocaleString()} kWh`,
       category: "Energy",
     },
-    "IF-RE-450a.2": {
+    "IF-RE-450a.2": { //Simulated metric for climate devaluation risk based on the overall risk score
       label: "Percentage from Grid Electricity",
       value: `${75 + (h % 20)}%`,
       category: "Energy",
     },
-    "IF-RE-450a.3": {
+    "IF-RE-450a.3": { ////Simulated metric for climate devaluation risk based on the overall risk score
       label: "Climate Change Adaptation - Flood Risk Zone",
       value: floodRisk > 60 ? "FEMA Zone A/V (High)" : floodRisk > 30 ? "FEMA Zone B/X500 (Moderate)" : "FEMA Zone C/X (Minimal)",
       category: "Climate Adaptation",
     },
-    "IF-RE-450a.4": {
+    "IF-RE-450a.4": { //Simulated metric for climate devaluation risk based on the overall risk score
       label: "WUI Classification - Wildfire Interface",
       value: wildfireRisk > 60 ? "Direct WUI Interface" : wildfireRisk > 35 ? "WUI Influence Zone" : "Non-WUI",
       category: "Climate Adaptation",
     },
-    "IF-RE-410a.1": {
+    "IF-RE-410a.1": { //Simulated metric for climate devaluation risk based on the overall risk score
       label: "GHG Emissions - Scope 1 & 2",
       value: `${ghgEmissions.toFixed(1)} tCO2e/year`,
       category: "Emissions",
     },
-    "IF-RE-410a.2": {
+    "IF-RE-410a.2": { //Simulated metric for climate devaluation risk based on the overall risk score
       label: "Air Quality Index - Local Annual Average",
       value: `AQI ${airQualityIndex.toFixed(0)} (${airQualityIndex < 50 ? "Good" : airQualityIndex < 100 ? "Moderate" : "Unhealthy"})`,
       category: "Air Quality",
     },
-    "IF-RE-000.A": {
+    "IF-RE-000.A": { //Simulated metric for climate devaluation risk based on the overall risk score
       label: "30-Year Climate Devaluation Probability",
       value: `${(devaluationProbability * 100).toFixed(1)}%`,
       category: "Financial Risk",
