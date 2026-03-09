@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertDocumentSchema } from "@shared/schema";
+import { insertDocumentSchema } from "../shared/schema";
 import { detectPii, extractPropertyAddress, initNerModel, isModelReady } from "./pii-detector";
 import { assessRisk } from "./risk-assessor";
 
