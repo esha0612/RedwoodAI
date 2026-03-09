@@ -1,5 +1,5 @@
 //model setup + config
-import { pipeline, env, type TokenClassificationPipeline } from "@xenova/transformers";
+import { pipeline, env, type TokenClassificationPipeline } from "@xenova/transformers"; 
 
 env.cacheDir = "./.model-cache";
 env.allowLocalModels = false;
