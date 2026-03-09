@@ -6,7 +6,6 @@
     "dev": "tsx index.ts",
     "start": "NODE_ENV=production tsx index.ts",
     "build": "echo 'no build step'"
-
   },
   "dependencies": {
     "dotenv": "^17.3.1",
@@ -14,13 +13,13 @@
     "mongoose": "^9.2.3",
     "pg": "^8.16.3",
     "ws": "^8.18.0",
-    "zod": "^3.24.2"
+    "zod": "^3.24.2",
+    "@xenova/transformers": "^2.17.2",
+    "tsx": "^4.20.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "20.19.27",
-    "tsx": "^4.20.5",
-    "typescript": "5.6.3",
-    "@xenova/transformers": "^2.17.2"
+    "typescript": "5.6.3"
   }
 }
