@@ -1,4 +1,5 @@
 import "dotenv/config";
+import cors from "cors";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
@@ -8,6 +9,19 @@ import { connectDB } from "./db";
 
 const app = express();
 const httpServer = createServer(app);
+
+// Allow frontend on Vercel (or other host) to call this API when CORS_ORIGIN is set (e.g. https://your-app.vercel.app)
+const corsOrigin = process.env.CORS_ORIGIN;
+app.use(
+  cors({
+    origin: corsOrigin
+      ? corsOrigin.split(",").map((s) => s.trim())
+      : process.env.NODE_ENV === "production"
+        ? false
+        : true,
+    credentials: true,
+  }),
+);
 
 declare module "http" {
   interface IncomingMessage {
@@ -80,11 +94,28 @@ app.use((req, res, next) => {
     return res.status(status).json({ message });
   });
 
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
+  // Production: serve built client from server/public if present; otherwise show a simple API landing page
   if (process.env.NODE_ENV === "production") {
-    serveStatic(app);
+    const staticServed = serveStatic(app);
+    if (!staticServed) {
+      app.get("/", (_req, res) => {
+        res.type("html").send(`
+          <!DOCTYPE html>
+          <html>
+            <head><title>RedwoodAI API</title></head>
+            <body style="font-family: system-ui; max-width: 600px; margin: 2rem auto; padding: 0 1rem;">
+              <h1>RedwoodAI API</h1>
+              <p>Backend is running. Use the client app or call the API directly.</p>
+              <ul>
+                <li><a href="/api/documents">GET /api/documents</a></li>
+                <li><a href="/api/assessments">GET /api/assessments</a></li>
+                <li><a href="/api/pipeline/status">GET /api/pipeline/status</a></li>
+              </ul>
+            </body>
+          </html>
+        `);
+      });
+    }
   } else {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
